@@ -63,13 +63,15 @@ def get_xy_coords(ds, dims, resolution=1.0):
     return x, y
 
 
-def create_topography_stl_from_elevation(elevation, x, y, output_path, vertical_offset=100):
+def create_topography_stl_from_elevation(elevation, x, y, output_path, vertical_offset=50,
+                                          horizontal_scale=1.0, vertical_scale=1.0):
     ny, nx = elevation.shape
 
-    X, Y = np.meshgrid(x, y)
+    X, Y = np.meshgrid(x * horizontal_scale, y * horizontal_scale)
 
     Z = elevation.flatten().astype(np.float64)
     Z -= np.nanmin(Z)
+    Z *= vertical_scale
     Z += vertical_offset
 
     top_vertices = np.column_stack((X.flatten(), Y.flatten(), Z)).astype(np.float32)
@@ -109,21 +111,24 @@ def create_topography_stl_from_elevation(elevation, x, y, output_path, vertical_
     save_stl(vertices, faces, output_path)
 
 
-def create_topography_stl(ds, output_path, vertical_offset=100):
+def create_topography_stl(ds, output_path, vertical_offset=100, horizontal_scale=1.0, vertical_scale=1.0):
     thk = np.asarray(ds.variables["thk"][:])
     usurf = np.asarray(ds.variables["usurf"][:])
     bedrock = usurf - thk
 
     x, y = get_xy_coords(ds, ("y", "x"))
-    create_topography_stl_from_elevation(bedrock, x, y, output_path, vertical_offset)
+    create_topography_stl_from_elevation(bedrock, x, y, output_path, vertical_offset,
+                                          horizontal_scale, vertical_scale)
 
 
-def create_bed_topography_stl(ds, output_path, elevation_var="ter", resolution=1.0, vertical_offset=100):
+def create_bed_topography_stl(ds, output_path, elevation_var="ter", resolution=1.0, vertical_offset=100,
+                               horizontal_scale=1.0, vertical_scale=1.0):
     elevation = np.asarray(ds.variables[elevation_var][:])
     y_dim, x_dim = ds.variables[elevation_var].dimensions
 
     x, y = get_xy_coords(ds, (y_dim, x_dim), resolution=resolution)
-    create_topography_stl_from_elevation(elevation, x, y, output_path, vertical_offset)
+    create_topography_stl_from_elevation(elevation, x, y, output_path, vertical_offset,
+                                          horizontal_scale, vertical_scale)
 
 
 def get_boundary_edges(triangles):
@@ -152,14 +157,15 @@ def filter_by_edge_length(vertices, triangles, max_edge_length):
     return np.asarray(valid, dtype=np.int64).reshape(-1, 3)
 
 
-def create_glacier_stl(ds, output_path, min_thickness=1.0, max_edge_length=2000.0):
+def create_glacier_stl(ds, output_path, min_thickness=1.0, max_edge_length=2000.0,
+                        horizontal_scale=1.0, vertical_scale=1.0):
 
     thk = np.asarray(ds.variables["thk"][:])
     usurf = np.asarray(ds.variables["usurf"][:])
     topg = usurf - thk
 
-    x = np.asarray(ds.variables["x"][:])
-    y = np.asarray(ds.variables["y"][:])
+    x = np.asarray(ds.variables["x"][:]) * horizontal_scale
+    y = np.asarray(ds.variables["y"][:]) * horizontal_scale
 
     X, Y = np.meshgrid(x, y)
     mask = thk > min_thickness
@@ -182,8 +188,8 @@ def create_glacier_stl(ds, output_path, min_thickness=1.0, max_edge_length=2000.
 
     x_v = Xf[valid]
     y_v = Yf[valid]
-    z_top = usurf.flatten()[valid] + 50
-    z_bot = topg.flatten()[valid]
+    z_top = (usurf.flatten()[valid] + 50) * vertical_scale
+    z_bot = topg.flatten()[valid] * vertical_scale
 
     pts2d = np.column_stack((x_v, y_v))
 
@@ -230,9 +236,13 @@ def main():
     parser.add_argument("input", type=str, help="Input NetCDF file")
     parser.add_argument("--output-dir", type=str, default="STLS", help="Output directory")
 
-    parser.add_argument("--vertical-offset", type=float, default=100.0)
+    parser.add_argument("--vertical-offset", type=float, default=50.0)
     parser.add_argument("--min-thickness", type=float, default=1.0)
     parser.add_argument("--max-edge-length", type=float, default=100.0)
+    parser.add_argument("--horizontal-scale", type=float, default=1.0,
+                         help="Scale factor applied to x/y coordinates (e.g. 0.4 for 40%% of original size).")
+    parser.add_argument("--vertical-scale", type=float, default=1.0,
+                         help="Scale factor applied to elevation/thickness values (e.g. 5 for 5x exaggeration).")
     parser.add_argument(
         "--resolution",
         type=float,
@@ -255,6 +265,8 @@ def main():
                 ds,
                 output_dir / "topography.stl",
                 vertical_offset=args.vertical_offset,
+                horizontal_scale=args.horizontal_scale,
+                vertical_scale=args.vertical_scale,
             )
 
             create_glacier_stl(
@@ -262,6 +274,8 @@ def main():
                 output_dir / "glacier.stl",
                 min_thickness=args.min_thickness,
                 max_edge_length=args.max_edge_length,
+                horizontal_scale=args.horizontal_scale,
+                vertical_scale=args.vertical_scale,
             )
         elif "ter" in ds.variables:
             print("No 'thk'/'usurf' found; treating 'ter' as bed topography (no glacier data).")
@@ -271,6 +285,8 @@ def main():
                 elevation_var="ter",
                 resolution=args.resolution,
                 vertical_offset=args.vertical_offset,
+                horizontal_scale=args.horizontal_scale,
+                vertical_scale=args.vertical_scale,
             )
         else:
             raise ValueError(
