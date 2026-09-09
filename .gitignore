@@ -2,3 +2,4 @@
 data/*.nc
 STLS/
 .vscode/settings.json
+terrain.stl
