@@ -38,19 +38,37 @@ def save_stl(vertices, faces, output_path):
     print(f"Saved: {output_path}")
 
 
-def create_topography_stl(ds, output_path, vertical_offset=100):
-    thk = np.asarray(ds.variables["thk"][:])
-    usurf = np.asarray(ds.variables["usurf"][:])
+def get_xy_coords(ds, dims, resolution=1.0):
+    """Return 1D x/y coordinate arrays for the given (y_dim, x_dim) dimension names.
 
-    bedrock = usurf - thk
+    Handles both real-world projected coordinates (e.g. IGM's "x"/"y" in metres)
+    and index-only dimensions (e.g. WRF's "west_east"/"south_north", which just
+    count grid cells) by scaling plain 0..n-1 index arrays by `resolution`.
+    """
+    y_dim, x_dim = dims
 
-    x = np.asarray(ds.variables["x"][:])
-    y = np.asarray(ds.variables["y"][:])
-    ny, nx = bedrock.shape
+    def axis(name, size):
+        if name in ds.variables:
+            arr = np.asarray(ds.variables[name][:]).astype(np.float64)
+        else:
+            arr = np.arange(size, dtype=np.float64)
+
+        if np.allclose(arr, np.arange(len(arr))):
+            arr = arr * resolution
+
+        return arr
+
+    x = axis(x_dim, ds.dimensions[x_dim].size)
+    y = axis(y_dim, ds.dimensions[y_dim].size)
+    return x, y
+
+
+def create_topography_stl_from_elevation(elevation, x, y, output_path, vertical_offset=100):
+    ny, nx = elevation.shape
 
     X, Y = np.meshgrid(x, y)
 
-    Z = bedrock.flatten()
+    Z = elevation.flatten().astype(np.float64)
     Z -= np.nanmin(Z)
     Z += vertical_offset
 
@@ -89,6 +107,23 @@ def create_topography_stl(ds, output_path, vertical_offset=100):
     faces = np.asarray(top_faces + bottom_faces + wall_faces)
 
     save_stl(vertices, faces, output_path)
+
+
+def create_topography_stl(ds, output_path, vertical_offset=100):
+    thk = np.asarray(ds.variables["thk"][:])
+    usurf = np.asarray(ds.variables["usurf"][:])
+    bedrock = usurf - thk
+
+    x, y = get_xy_coords(ds, ("y", "x"))
+    create_topography_stl_from_elevation(bedrock, x, y, output_path, vertical_offset)
+
+
+def create_bed_topography_stl(ds, output_path, elevation_var="ter", resolution=1.0, vertical_offset=100):
+    elevation = np.asarray(ds.variables[elevation_var][:])
+    y_dim, x_dim = ds.variables[elevation_var].dimensions
+
+    x, y = get_xy_coords(ds, (y_dim, x_dim), resolution=resolution)
+    create_topography_stl_from_elevation(elevation, x, y, output_path, vertical_offset)
 
 
 def get_boundary_edges(triangles):
@@ -198,6 +233,13 @@ def main():
     parser.add_argument("--vertical-offset", type=float, default=100.0)
     parser.add_argument("--min-thickness", type=float, default=1.0)
     parser.add_argument("--max-edge-length", type=float, default=100.0)
+    parser.add_argument(
+        "--resolution",
+        type=float,
+        default=1.0,
+        help="Grid spacing in metres, used only for bed-only files (e.g. 'ter') "
+             "whose x/y dimensions are plain cell indices rather than real coordinates.",
+    )
 
     args = parser.parse_args()
 
@@ -208,18 +250,33 @@ def main():
     with Dataset(input_file) as ds:
         print("Variables:", list(ds.variables.keys()))
 
-        create_topography_stl(
-            ds,
-            output_dir / "topography.stl",
-            vertical_offset=args.vertical_offset,
-        )
+        if "thk" in ds.variables and "usurf" in ds.variables:
+            create_topography_stl(
+                ds,
+                output_dir / "topography.stl",
+                vertical_offset=args.vertical_offset,
+            )
 
-        create_glacier_stl(
-            ds,
-            output_dir / "glacier.stl",
-            min_thickness=args.min_thickness,
-            max_edge_length=args.max_edge_length,
-        )
+            create_glacier_stl(
+                ds,
+                output_dir / "glacier.stl",
+                min_thickness=args.min_thickness,
+                max_edge_length=args.max_edge_length,
+            )
+        elif "ter" in ds.variables:
+            print("No 'thk'/'usurf' found; treating 'ter' as bed topography (no glacier data).")
+            create_bed_topography_stl(
+                ds,
+                output_dir / "topography.stl",
+                elevation_var="ter",
+                resolution=args.resolution,
+                vertical_offset=args.vertical_offset,
+            )
+        else:
+            raise ValueError(
+                "Could not find recognized elevation variables. "
+                "Expected 'thk'+'usurf', or 'ter'."
+            )
 
 
 if __name__ == "__main__":
